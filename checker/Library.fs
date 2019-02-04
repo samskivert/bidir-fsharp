@@ -3,6 +3,8 @@ namespace checker
 // NOTE: there's no UTF8 character for α hat (nor β hat), so we use â and ĉ for existential vars
 
 module Bidir =
+  let trace = true
+
   /// types (A,B,C): 1 | α | â | ∀α.A | A→B
   type Type =
     | TUnset
@@ -42,6 +44,50 @@ module Bidir =
       | XAnnot(exp, tpe) -> sprintf "(%O : %O)" exp tpe
       | XLet(v, exp, body) -> sprintf "let %s = %O in %O" v exp body
       | XIf(test, ift, iff) -> sprintf "if %O %O else %O" test ift iff
+
+  /// Returns the type of the AST node `exprType`.
+  let rec exprType = function
+    | XUnit -> TUnit
+    | XBool _ -> TBool
+    | XVar(_, tpe) -> tpe
+    | XLambda(_, atpe, body) -> TArrow(atpe, exprType body)
+    | XApply(_, _, tpe) -> tpe
+    | XAnnot(_, tpe) -> tpe
+    | XLet(_, _, body) -> exprType body
+    | XIf(_, _, fexp) -> exprType fexp
+
+  /// Prints an AST along with type annotation information.
+  let rec printTree expr indent =
+    let nindent = indent + " "
+    match expr with
+    | XUnit ->
+      printfn "%s() :: ()" indent
+    | XBool b ->
+      printfn "%s%b :: bool" indent b
+    | XVar(name, tpe) ->
+      printfn "%s%s :: %O" indent name tpe
+    | XIf(test, ifT, ifF) ->
+      printfn "%sif :: %O" indent (exprType expr)
+      printTree test nindent
+      printTree ifT nindent
+      printTree ifF nindent
+    | XLet(x, exp, body) ->
+      printfn "%slet :: %O" indent (exprType expr)
+      printfn "%s%s :: %O" nindent x (exprType exp)
+      printTree exp  nindent
+      printTree body nindent
+    | XLambda(arg, atpe, exp) ->
+      printfn "%sλ :: %O" indent (exprType expr)
+      printfn "%s%s :: %O" nindent arg atpe
+      printTree exp nindent
+    | XApply(fn, arg, tpe) ->
+      printfn "%s● :: %O" indent tpe
+      printTree fn nindent
+      printTree arg nindent
+    | XAnnot(exp, ann) ->
+      printfn "%s: :: %O" indent (exprType exp)
+      printTree exp nindent
+      printfn "%s %O" indent ann
 
   /// contexts (Γ,∆,Θ): · | Γ,α | Γ,x:A | Γ,â | Γ,â = τ | Γ,▶â
   type Note =
@@ -155,13 +201,13 @@ module Bidir =
     // InstLSolve :: Γ,â,Γ′ ⊢ â :=< τ ⊣ Γ,â=τ,Γ′
     | a when (isMono a) && (isWellFormed (peel ctx neA) a) -> // Γ ⊢ τ
       let (postCtx, preCtx) = split ctx neA
-      printfn "- InstLSolve %O :=< %O" eA a
+      if (trace) then printfn "- InstLSolve %O :=< %O" eA a
       List.append postCtx ((NSol(eA, a) :: preCtx)) // Γ,â=τ,Γ′
 
     // InstLReach :: Γ[â][ĉ] ⊢ â :=< ĉ ⊣ Γ[â][ĉ=â]
     | TEVar eC when List.contains neA (peel ctx (NEVar eC)) ->
       let (postCtx, preCtx) = split ctx (NEVar eC)
-      printfn "- InstLReach %O :=< %O" eA eC
+      if (trace) then printfn "- InstLReach %O :=< %O" eA eC
       List.append postCtx (NSol(eC, (TEVar eA)) :: preCtx) // Γ[â][ĉ=â]
 
     // InstLArr :: Γ[â] ⊢ â :=< A1 → A2 ⊣ ∆
@@ -170,15 +216,15 @@ module Bidir =
       let eA1, eA2 = freshEVar "a₁", freshEVar "a₂"
       let neA1, teA1, neA2, teA2 = NEVar eA1, TEVar eA1, NEVar eA2, TEVar eA2
       let a1ctx = List.append postCtx (NSol(eA, TArrow(teA1, teA2)) :: neA1 :: neA2 :: preCtx)
-      printfn "- InstLArr(1) %O :=< %O in %s" a1 eA1 (fmt a1ctx)
+      if (trace) then printfn "- InstLArr(1) %O :=< %O in %s" a1 eA1 (fmt a1ctx)
       let theta = instantiateR a1ctx a1 eA1 // Γ[â₂,â₁,â=â₁→â2] ⊢ A1 :=< â₁ ⊣ Θ
-      printfn "- InstRArr(2) %O :=< %O in %s" eA2 (apply theta a2) (fmt theta)
+      if (trace) then printfn "- InstRArr(2) %O :=< %O in %s" eA2 (apply theta a2) (fmt theta)
       instantiateL theta eA2 (apply theta a2) // Θ ⊢ â₂ :=< [Θ]A2 ⊣ ∆
 
     // InstLAllR :: Γ[â] ⊢ â :=< ∀β.B ⊣ ∆
     | TAll(uB, b) when List.contains neA ctx ->
       let nuB = NUVar uB
-      printfn "- InstLAllR %O :=< %O in %s" eA b (fmt (nuB :: ctx))
+      if (trace) then printfn "- InstLAllR %O :=< %O in %s" eA b (fmt (nuB :: ctx))
       let deltaEtc = instantiateL (nuB :: ctx) eA b // Γ[â],β ⊢ â :=< B ⊣ ∆,β,∆′
       peel deltaEtc nuB // ∆
 
@@ -192,13 +238,13 @@ module Bidir =
     // InstRSolve :: Γ,â,Γ′ ⊢ τ :=< â ⊣ Γ,â=τ,Γ′
     | a when (isMono a) && (isWellFormed (peel ctx neA) a) -> // Γ ⊢ τ
       let (postCtx, preCtx) = split ctx neA
-      printfn "- InstRSolve %O :=< %O" a eA
+      if (trace) then printfn "- InstRSolve %O :=< %O" a eA
       List.append postCtx (NSol(eA, a) :: preCtx) // Γ,â=τ,Γ′
 
     // InstRReach :: Γ[â][ĉ] ⊢ ĉ :=< â ⊣ Γ[â][ĉ=â]
     | TEVar eC when List.contains neA (peel ctx (NEVar eC)) ->
       let (postCtx, preCtx) = split ctx (NEVar eC)
-      printfn "- InstRReach %O :=< %O" eC eA
+      if (trace) then printfn "- InstRReach %O :=< %O" eC eA
       List.append postCtx (NSol(eC, TEVar eA) :: preCtx) // Γ[â][ĉ = â]
 
     // InstRArr :: Γ[â] ⊢ A1 → A2 :=< â ⊣ ∆
@@ -207,16 +253,16 @@ module Bidir =
       let eA1, eA2 = freshEVar("a₁"), freshEVar("a₂")
       let neA1, teA1, neA2, teA2 = NEVar eA1, TEVar eA1, NEVar eA2, TEVar eA2
       let a1ctx = List.append postCtx (NSol(eA, TArrow(teA1, teA2)) :: neA1 :: neA2 :: preCtx)
-      printfn "- InstRArr(1) %O :=< %O in %s" eA1 a1 (fmt a1ctx)
+      if (trace) then printfn "- InstRArr(1) %O :=< %O in %s" eA1 a1 (fmt a1ctx)
       let theta = instantiateL a1ctx eA1 a1 // Γ[â₂,â₁,â=â₁→â₂] ⊢ â₁ :=< A1 ⊣ Θ
-      printfn "- InstRArr(2) %O :=< %O in %s" (apply theta a2) eA2 (fmt theta)
+      if (trace) then printfn "- InstRArr(2) %O :=< %O in %s" (apply theta a2) eA2 (fmt theta)
       instantiateR theta (apply theta a2) eA2 // Θ ⊢ [Θ]A2 :=< â₂ ⊣ ∆
 
     // InstRAllL :: Γ[â],▶ĉ,ĉ ⊢ [ĉ/β]B :=< â ⊣ ∆,▶ĉ,∆′
     | TAll(uB, b) when List.contains neA ctx ->
       let eC = freshEVar("c")
       let instCtx = (NEVar eC) :: (NMark eC) :: ctx // Γ[â],▶ĉ,ĉ
-      printfn "- InstRAllL [%O/%O]%O :=< %O in %s" eC uB b eA (fmt instCtx)
+      if (trace) then printfn "- InstRAllL [%O/%O]%O :=< %O in %s" eC uB b eA (fmt instCtx)
       let bSubst = subst (TEVar eC) (TUVar uB) b
       let deltaEtc = instantiateR instCtx bSubst eA // Γic ⊢ [ĉ/β]B :=< â ⊣ ∆,▶ĉ,∆′
       peel deltaEtc (NMark eC) // ∆
@@ -254,11 +300,11 @@ module Bidir =
       peel deltaEtc nuA // ∆
     // <:InstantiateL :: Γ[â] ⊢ â <: A ⊣ ∆
     | (TEVar eA, a) when (List.contains (NEVar eA) ctx) && not (containsFree a eA) ->
-      printfn "- <:InstL %O :=< %O" eA a
+      if (trace) then printfn "- <:InstL %O :=< %O" eA a
       instantiateL ctx eA a // Γ[â] ⊢ â :=< A ⊣ ∆
     // <:InstantiateR :: Γ[â] ⊢ A <: â ⊣ ∆
     | (a, TEVar eA) when (List.contains (NEVar eA) ctx) && not (containsFree a eA) ->
-      printfn "- <:InstR %O :=< %O" a eA
+      if (trace) then printfn "- <:InstR %O :=< %O" a eA
       instantiateR ctx a eA // Γ[â] ⊢ A <: â ⊣ ∆
     | _ -> failwith (sprintf "Type mismatch: expected '%O', given: '%O'" tpeB tpeA)
 
@@ -277,7 +323,7 @@ module Bidir =
       // exp.tpe = tpe  // lambda types are not always synthesized, so we also assign lambda AST
       // arg.tpe = argT // nodes a type during checking, ditto for the lambda argument nodes
       let argAssump = NAssump(arg, argT) // x:A
-      printfn "- ->I (%O <= %O) in %s" body bodyT (fmt (argAssump :: ctx))
+      if (trace) then printfn "- ->I (%O <= %O) in %s" body bodyT (fmt (argAssump :: ctx))
       let (checkedBody, deltaEtc) = check (argAssump :: ctx) body bodyT // Γ,x:A ⊢ e ⇐ B ⊣ ∆,x:A,Θ
       let delta = peel deltaEtc argAssump // ∆
       (XLambda(arg, argT, checkedBody), delta)
@@ -285,25 +331,25 @@ module Bidir =
     // ∀I :: (e, ∀α.A)
     | (exp, TAll(uA, tpe)) ->
       let nuA = NUVar uA
-      printfn "- ∀I (%O <= %O) in %s" exp tpe (fmt (nuA :: ctx))
+      if (trace) then printfn "- ∀I (%O <= %O) in %s" exp tpe (fmt (nuA :: ctx))
       let (checkedExp, deltaEtc) = check (nuA :: ctx) exp tpe // Γ,α ⊢ e ⇐ A ⊣ ∆,α,Θ
       (checkedExp, peel deltaEtc nuA) // ∆
 
     // If :: (if test ifTrue else ifFalse, T)
     | (XIf(test, ifTrue, ifFalse), tpe) ->
       // exp.tpe = tpe
-      printfn "- If (%O <= Bool) in %s" test (fmt ctx)
+      if (trace) then printfn "- If (%O <= Bool) in %s" test (fmt ctx)
       let (checkedTest, _) = check ctx test TBool
-      printfn "- If (%O <= %O) in %s" ifTrue tpe (fmt ctx)
+      if (trace) then printfn "- If (%O <= %O) in %s" ifTrue tpe (fmt ctx)
       let (checkedTrue, _) = check ctx ifTrue tpe
-      printfn "- If (%O <= %O) in %s" ifFalse tpe (fmt ctx)
+      if (trace) then printfn "- If (%O <= %O) in %s" ifFalse tpe (fmt ctx)
       let (checkedFalse, delta) = check ctx ifFalse tpe
       (XIf(checkedTest, checkedTrue, checkedFalse), delta) // peel delta?
 
     // Sub :: (e, B)
     | (exp, tpe) ->
       let (expType, checkedExp, theta) = infer ctx exp // Γ ⊢ e ⇒ A ⊣ Θ
-      printfn "- Sub (%O -> %O) ; [Θ]%O <: [Θ]%O in %s" exp expType expType tpe (fmt theta)
+      if (trace) then printfn "- Sub (%O -> %O) ; [Θ]%O <: [Θ]%O in %s" exp expType expType tpe (fmt theta)
       let delta = subtype theta (apply theta expType) (apply theta tpe)
       // apply the solutions from subtyping to our subtree, otherwise we can be left with temporary
       // type variables in type checked subtrees
@@ -331,14 +377,14 @@ module Bidir =
       let assump = NAssump(x, expType)
       // x.tpe = expType // assign type to var node, which is not separately entyped
       let checkCtx = assump :: (NEVar eC) :: theta
-      printfn "- Let-> (%O <= %O) in %s" body eC (fmt checkCtx)
+      if (trace) then printfn "- Let-> (%O <= %O) in %s" body eC (fmt checkCtx)
       let (checkedBody, checkedCtx) = check checkCtx body teC
       (teC, XLet(x, inferredExp, checkedBody), peel checkedCtx assump)
     // If=> :: if test ifTrue else ifFalse
     | XIf(test, ifTrue, ifFalse) ->
       let (checkedTest, _) = check ctx test TBool
       let (trueType, inferredTrue, theta) = infer ctx ifTrue
-      printfn "- If-> ('%O' -> %O) ; ('%O' <= %O) in %s" ifTrue trueType ifFalse trueType (fmt theta)
+      if (trace) then printfn "- If-> ('%O' -> %O) ; ('%O' <= %O) in %s" ifTrue trueType ifFalse trueType (fmt theta)
       let (checkedFalse, delta) = check theta ifFalse trueType
       (trueType, XIf(checkedTest, inferredTrue, checkedFalse), delta) // TODO: peel?
     // ->I=> :: λx.e
@@ -348,14 +394,14 @@ module Bidir =
       let assump = NAssump(arg, teA) // x:â
       // arg.tpe = eA // assign type to arg node, which is not separately entyped
       let checkCtx = assump :: (NEVar eC) :: (NEVar eA) :: ctx // Γ,â,ĉ,x:â
-      printfn "- ->I=> ('%O' <= %O) in %s" body eC (fmt checkCtx)
+      if (trace) then printfn "- ->I=> ('%O' <= %O) in %s" body eC (fmt checkCtx)
       let (checkedBody, checkedCtx) = check checkCtx body teC // e ⇐ ĉ ⊣ ∆,x:â,Θ
       (TArrow(teA, teC), XLambda(arg, teA, checkedBody), peel checkedCtx assump) // â→ĉ ⊣ ∆
     // ->E :: (e1 e2)
     | XApply(fn, arg, _) ->
       let (funType, checkedFun, theta) = infer ctx fn // e1 ⇒ A ⊣ Θ
       let reducedFun = apply theta funType // [Θ]A
-      printfn "- ->E '%O' -> %O ; %O ● '%O' in %s" fn funType reducedFun arg (fmt theta)
+      if (trace) then printfn "- ->E '%O' -> %O ; %O ● '%O' in %s" fn funType reducedFun arg (fmt theta)
       let (resType, checkedArg, delta) = inferApp theta reducedFun arg // C ⊣ ∆
       // fn.apply(delta)
       (resType, XApply(checkedFun, checkedArg, resType), delta)
@@ -374,7 +420,7 @@ module Bidir =
       let eA = freshEVar("a") // â
       let reduced = subst (TEVar eA) (TUVar uv) tpe // [â/α]A
       let appCtx = (NEVar eA) :: ctx // Γ,â
-      printfn "- ∀App %O ● '%O' in %s" reduced exp (fmt appCtx)
+      if (trace) then printfn "- ∀App %O ● '%O' in %s" reduced exp (fmt appCtx)
       inferApp appCtx reduced exp // C ⊣ ∆
     // âApp
     | TEVar eA ->
@@ -383,7 +429,7 @@ module Bidir =
       let aArrow = TArrow(TEVar a1, TEVar a2) // â₁→â₂
       let (postCtx, preCtx) = split ctx (NEVar eA) // Γpre[â]post
       let checkCtx = List.append postCtx (NSol(eA, aArrow) :: (NEVar a1) :: (NEVar a2) :: preCtx) // Γpre[â₂,â₁,â=â₁→â₂]post
-      printfn "- âApp '%O' <= %O in %s" exp a1 (fmt checkCtx)
+      if (trace) then printfn "- âApp '%O' <= %O in %s" exp a1 (fmt checkCtx)
       let (checkedExp, delta) = check checkCtx exp (TEVar a1)
       (TEVar a2, checkedExp, delta) // â₂ ⊣ ∆
     // ->App
@@ -396,54 +442,10 @@ module Bidir =
   /// Runs inference on `expr` and returns the term with type assigned or throws an error.
   let inferExpr expr =
     nextEVar <- 1 // makes error messages less arbitrary
-    printfn "inferExpr %O" expr
+    if (trace) then printfn "inferExpr %O" expr
     let (_, infExpr, delta) = infer [] expr
+    if (trace) then printfn "∆ = %O" delta
+    if (trace) then printTree infExpr ""
     // apply the final context to the top-level term, which will have only been inferred and not
     // checked (checking is where we normally apply contexts)
-    // expr.apply(delta)
-    printfn "∆ = %O" delta
-    // if (Trace) printTree(expr)
     applyExpr delta infExpr
-
-  /// Returns the type of the AST node `exprType`.
-  let rec exprType = function
-    | XUnit -> TUnit
-    | XBool _ -> TBool
-    | XVar(_, tpe) -> tpe
-    | XLambda(_, atpe, body) -> TArrow(atpe, exprType body)
-    | XApply(_, _, tpe) -> tpe
-    | XAnnot(_, tpe) -> tpe
-    | XLet(_, _, body) -> exprType body
-    | XIf(_, _, fexp) -> exprType fexp
-
-  let rec printTree expr indent =
-    let nindent = indent + " "
-    match expr with
-    | XUnit ->
-      printfn "%s() :: ()" indent
-    | XBool b ->
-      printfn "%s%b :: bool" indent b
-    | XVar(name, tpe) ->
-      printfn "%s%s :: %O" indent name tpe
-    | XIf(test, ifT, ifF) ->
-      printfn "%sif :: %O" indent (exprType expr)
-      printTree test nindent
-      printTree ifT nindent
-      printTree ifF nindent
-    | XLet(x, exp, body) ->
-      printfn "%slet :: %O" indent (exprType expr)
-      printfn "%s%s :: %O" nindent x (exprType exp)
-      printTree exp  nindent
-      printTree body nindent
-    | XLambda(arg, atpe, exp) ->
-      printfn "%sλ :: %O" indent (exprType expr)
-      printfn "%s%s :: %O" nindent arg atpe
-      printTree exp nindent
-    | XApply(fn, arg, tpe) ->
-      printfn "%s● :: %O" indent tpe
-      printTree fn nindent
-      printTree arg nindent
-    | XAnnot(exp, ann) ->
-      printfn "%s: :: %O" indent (exprType exp)
-      printTree exp nindent
-      printfn "%s %O" indent ann

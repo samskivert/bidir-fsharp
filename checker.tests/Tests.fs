@@ -33,9 +33,7 @@ let idExpr = XLambda("x", TUnset, xV)
 [<Fact>]
 let testIdent () =
   let expr = XAnnot(XLambda("x", TUnset, xV), idType)
-  let infExpr = inferExpr expr
-  // printTree infExpr ""
-  Assert.Equal(TArrow(aTV, aTV), exprType infExpr) // TODO: is this desirable?
+  Assert.Equal(TArrow(aTV, aTV), expr |> inferExpr |> exprType) // TODO: is this desirable?
   Assert.Equal(TArrow(TEVar "a1", TEVar "a1"), idExpr |> inferExpr |> exprType)
   Assert.Equal(TUnit, XApply(idExpr, XUnit, TUnset) |> inferExpr |> exprType)
 
@@ -48,12 +46,8 @@ let hofBoolExpr = XLambda("f", TUnset, XApply(fV, XBool true, TUnset))
 
 [<Fact>]
 let testHOF () =
-  let boolExpr = inferExpr (XApply(hofBoolExpr, idExpr, TUnset))
-  // printTree infExpr ""
-  Assert.Equal(TBool, exprType boolExpr)
-  let unitExpr = inferExpr (XApply(hofUnitExpr, idExpr, TUnset))
-  // printTree unitExpr ""
-  Assert.Equal(TUnit, exprType unitExpr)
+  Assert.Equal(TBool, XApply(hofBoolExpr, idExpr, TUnset) |> inferExpr |> exprType)
+  Assert.Equal(TUnit, XApply(hofUnitExpr, idExpr, TUnset) |> inferExpr |> exprType)
 
 let inferFailure expr =
   try inferExpr expr |> ignore ; "<failed to fail!>"
@@ -76,12 +70,9 @@ let testHigherRank () =
   // fail: cannot infer higher-rank types
   Assert.Equal("Type mismatch: expected '^a₂8 → ^a₂8', given: '()'", inferFailure hrfExpr)
   let hrfAnnot = XAnnot(hrfExpr, hrfType) // (hrf : hrfType)
-  let hrfAnnotExpr = hrfAnnot |> inferExpr
-  // printTree hrfAnnotExpr ""
-  Assert.Equal(hrfType, hrfAnnotExpr |> exprType)
-  let hrfAppExpr = XApply(hrfAnnot, idExpr, TUnset) |> inferExpr
-  // printTree hrfAppExpr ""
-  Assert.Equal(TUnit, hrfAppExpr |> exprType) // ((hrf : hrfType) id)
+  Assert.Equal(hrfType, hrfAnnot |> inferExpr |> exprType)
+  let hrfAnnotApp = XApply(hrfAnnot, idExpr, TUnset) // ((hrf : hrfType) id)
+  Assert.Equal(TUnit, hrfAnnotApp |> inferExpr |> exprType)
 
 [<Fact>]
 let testLet () =
@@ -94,8 +85,5 @@ let testLet () =
   Assert.Equal(TBool, XLet("f", idExpr, yLetE) |> inferExpr |> exprType)
   // let f = (λx.x) : (forall a. a -> a) in let y = (λx.x) in ((f y) (f false))
   let yLetU = XLet("y", idExpr, XApply(XApply(fV, yV, TUnset), XApply(fV, xFalse, TUnset), TUnset))
-  let expr = XLet("f", XAnnot(idExpr, idType), yLetU) |> inferExpr
-  // printfn "%O" expr
-  // printTree expr ""
-  Assert.Equal(TBool, expr |> exprType)
+  Assert.Equal(TBool, XLet("f", XAnnot(idExpr, idType), yLetU) |> inferExpr |> exprType)
 
